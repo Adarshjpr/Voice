@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Recorder</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      max-width: 500px;
+      margin: auto;
+    }
+
+    button {
+      padding: 12px 20px;
+      margin: 5px 0;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 15px;
+      width: 100%;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    #startBtn {
+      background: #4caf50;
+      color: white;
+    }
+
+    #stopBtn {
+      background: #f44336;
+      color: white;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-weight: bold;
+    }
+
+    #transcript {
+      margin-top: 10px;
+      padding: 8px;
+      background: #f1f1f1;
+      border-radius: 6px;
+      min-height: 60px;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h2>Voice Recorder (to Google Sheet)</h2>
+  <button id="startBtn" type="button">Start Recording</button>
+  <button id="stopBtn" type="button" disabled>Stop &amp; Save</button>
+  <div id="status">Idle</div>
+  <div id="transcript" aria-live="polite"></div>
+
+  <script>
+    const WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzNVXVZ3deMmVMupjs9tE-SGivucxK6uSWhraoYaZ02xXHCroyH3bjZZbuyT9SByEB-/exec';
+    const targetCell = new URLSearchParams(window.location.search).get('target');
+
+    const startButton = document.getElementById('startBtn');
+    const stopButton = document.getElementById('stopBtn');
+    const status = document.getElementById('status');
+    const transcript = document.getElementById('transcript');
+
+    let mediaRecorder;
+    let audioChunks = [];
+    let recognition;
+    let finalTranscript = '';
+    let interimTranscript = '';
+    let recognitionActive = false;
+    let recordingStream;
+
+    function setStatus(message) {
+      status.textContent = message;
+    }
+
+    function resetControls() {
+      startButton.disabled = false;
+      stopButton.disabled = true;
+    }
+
+    function saveRecording() {
+      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      const reader = new FileReader();
+
+      reader.onloadend = () => {
+        const base64Audio = reader.result.split(',')[1];
+        const transcriptToSend = `${finalTranscript} ${interimTranscript}`.trim();
+
+        setStatus('Saving...');
+        fetch(WEBAPP_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            audio: base64Audio,
+            transcript: transcriptToSend,
+            target: targetCell
+          })
+        })
+          .then(() => {
+            setStatus(targetCell ? `Saved to ${targetCell}!` : 'Saved! Check your Google Sheet.');
+          })
+          .catch((error) => {
+            setStatus(`Failed to send: ${error.message}`);
+          });
+      };
+
+      reader.readAsDataURL(audioBlob);
+    }
+
+    function stopMediaRecorder() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    }
+
+    function startRecording() {
+      finalTranscript = '';
+      interimTranscript = '';
+      audioChunks = [];
+      transcript.textContent = '';
+      setStatus('Recording...');
+      startButton.disabled = true;
+      stopButton.disabled = false;
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => {
+          recordingStream = stream;
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = (event) => audioChunks.push(event.data);
+          mediaRecorder.onstop = () => {
+            saveRecording();
+            recordingStream.getTracks().forEach((track) => track.stop());
+            recordingStream = undefined;
+          };
+          mediaRecorder.start();
+        })
+        .catch((error) => {
+          resetControls();
+          setStatus(`Mic access denied: ${error.message}`);
+        });
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        transcript.textContent = 'Live transcription is not supported (use Chrome).';
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      recognitionActive = true;
+
+      recognition.onresult = (event) => {
+        interimTranscript = '';
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          if (event.results[index].isFinal) {
+            finalTranscript += `${event.results[index][0].transcript} `;
+          } else {
+            interimTranscript += event.results[index][0].transcript;
+          }
+        }
+        transcript.textContent = finalTranscript + interimTranscript;
+      };
+
+      recognition.onend = () => {
+        recognitionActive = false;
+        stopMediaRecorder();
+      };
+
+      recognition.start();
+    }
+
+    function stopRecording() {
+      setStatus('Finishing transcript...');
+      resetControls();
+
+      if (recognition && recognitionActive) {
+        recognition.stop();
+      } else {
+        stopMediaRecorder();
+      }
+    }
+
+    startButton.addEventListener('click', startRecording);
+    stopButton.addEventListener('click', stopRecording);
+  </script>
+</body>
+</html>
